@@ -1,0 +1,75 @@
+[size=5][b]Living Chrome[/b][/size]
+[i]Your cyberware isn't just installed. It grows, it has quirks, and sometimes it fights back.[/i]
+
+Every implant you equip earns XP as you use it, levels from 1 to 5, and rolls a hidden personality the first time you install it. Max it out and it masters. Get a Glitchy one and it learns twice as fast but may short-circuit in the middle of a firefight, unless you pay a ripperdoc to stabilize it.
+
+[size=4][b]Features[/b][/size]
+[list]
+[*][b]Implants level up (1-5)[/b] from combat time, nearby kills, and from [b]doing their own job[/b]:
+[list]
+[*]Frontal Cortex / Operating System: spending RAM on quickhacks. The OS also learns from Sandevistan and Berserk activations.
+[*]Nervous System: Kerenzikov activations
+[*]Eyes / Hands / Arms: kills
+[*]Skeleton / Immune / Integumentary: taking damage
+[*]Circulatory System: healing
+[*]Legs / Arms: spending stamina (dashing, melee)
+[/list]
+[*][b]Bonuses per level[/b] by body area: Crit Chance, Crit Damage, Max Health, Armor or Max Stamina.
+[*][b]Mastery at Lv 5:[/b] every implant adds a second bonus (e.g. +2 Max RAM for the OS, +10 Armor for the Skeleton).
+[*][b]Quirks[/b], rolled once per implant:
+[list]
+[*][b]Clean[/b] (60%): normal chrome
+[*][b]Tuned[/b] (25%): learns 50% faster
+[*][b]Glitchy[/b] (15%): learns 2x faster with 25% bigger bonuses, but malfunctions in combat until Lv 5 or until a ripperdoc stabilizes it
+[/list]
+[*][b]Malfunctions depend on where the implant sits[/b] (6 seconds each):
+[list]
+[*]Eyes: OPTICS FAULT (screen glitch, -15% Crit Chance)
+[*]Frontal Cortex / OS: RAM LEAK (screen glitch, RAM emptied)
+[*]Nervous System / Legs: MOTOR STUTTER (Stamina emptied)
+[*]Body systems: PLATING FAULT (-100 Armor)
+[*]Hands / Arms: SERVO JAM (Crit Damage and Crit Chance penalties)
+[/list]
+[*][b]Ripperdoc services:[/b] with a ripperdoc's screen open, open the CET overlay to pay eddies to [b]stabilize[/b] a Glitchy implant (6000) or [b]re-roll[/b] a quirk (3000).
+[*][b]Living Chrome window[/b] in the CET overlay: implants grouped by quirk, level, XP bar, bonus, mastery, kills, STABLE / MASTERED tags.
+[*][b]Settings[/b] in the window, and in the game's Settings menu if you use Native Settings UI: XP rates, malfunction chance and length, screen glitch on/off, on-screen messages, ripperdoc prices.
+[*][b]Per-playthrough progress:[/b] every playthrough keeps its own implant levels and quirks. Upgrading an implant to a higher tier keeps its progress.
+[/list]
+
+[size=4][b]Requirements[/b][/size]
+[list]
+[*]Cyberpunk 2077 patch 2.5
+[*][url=https://www.nexusmods.com/cyberpunk2077/mods/107]Cyber Engine Tweaks[/url] 1.38 or newer
+[*]Optional: [url=https://www.nexusmods.com/cyberpunk2077/mods/3518]Native Settings UI[/url] for a Living Chrome tab in the game's Settings
+[/list]
+
+[size=4][b]Installation[/b][/size]
+Install with Vortex, or manually: extract the zip into your Cyberpunk 2077 folder (the one with [i]bin[/i] and [i]archive[/i]) and merge folders. You should end up with:
+[code]Cyberpunk 2077\bin\x64\plugins\cyber_engine_tweaks\mods\LivingChrome\init.lua[/code]
+When the game starts, the CET console says [i][Living Chrome] v0.3.0 loaded.[/i]
+
+[size=4][b]Save safety / uninstalling[/b][/size]
+[list]
+[*]Stat bonuses and malfunction penalties are [b]never written into your save[/b]. The mod re-applies bonuses each time you load.
+[*]The only thing stored in your save is a hidden ID number that the game ignores.
+[*]The malfunction screen glitch is tracked so that a save made mid-glitch is cleaned up on the next load, and the mod never touches the story's own copy of that effect.
+[*]Clean uninstall: in the CET console run [code]GetMod("LivingChrome").uninstall()[/code] then save, quit, and delete the LivingChrome folder.
+[/list]
+
+[size=4][b]Console commands[/b][/size] (CET console)
+[code]GetMod("LivingChrome").status()                  list implants and progress
+GetMod("LivingChrome").addXp(500)                give equipped implants XP (testing)
+GetMod("LivingChrome").forceMalfunction("limbs") test a malfunction: optics, cortex, neural, body, limbs
+GetMod("LivingChrome").clearGlitch()             remove a stuck malfunction screen glitch
+GetMod("LivingChrome").reset()                   wipe progress for this playthrough
+GetMod("LivingChrome").uninstall()               remove all bonuses before uninstalling[/code]
+
+[size=4][b]Compatibility[/b][/size]
+Works alongside Cyberware-EX (extra slots) and Wannabe Edgerunner. The mod only adds its own temporary stat bonuses and doesn't edit any game files or items.
+
+[size=4][b]Reporting problems[/b][/size]
+Please post the red lines from the CET console, or the end of [i]bin\x64\plugins\cyber_engine_tweaks\scripting.log[/i], in the Posts tab.
+
+Source code: [url=https://github.com/La2o/Cyberpunk2077-LivingChrome]GitHub[/url]
+
+[i]This mod was made with AI assistance.[/i]

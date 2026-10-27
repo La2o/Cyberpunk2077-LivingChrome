@@ -23,7 +23,11 @@ folder was under version control; their history is recorded here.
   since usage XP now adds on top. Existing levels are kept.
 - Save file gains an 8th column (stable flag); older files still load.
 
-Not yet tested in-game: everything in v0.3.0.
+Tested in-game 2026-10-27 (game 2.5, CET 1.38.1): loads without errors, all
+five malfunction types, ripperdoc stabilize / re-roll at a real ripperdoc,
+mastery and STABLE / MASTERED tags, settings saved. Not yet seen in-game:
+XP from Sandevistan / Berserk / Kerenzikov activations, switching to a second
+playthrough.
 
 ## v0.2.1 - 2026-10-27
 - Fix: upgrading an implant no longer resets its level. Any tier ending on an
