@@ -1,0 +1,8 @@
+# Per-player data the mod writes next to init.lua while the game runs
+living_chrome_*.txt
+*.log
+db.sqlite3
+
+# Packaging output
+*.zip
+dist/
