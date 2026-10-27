@@ -3,9 +3,27 @@
 Git history starts at v0.2.1. Earlier versions were developed before the
 folder was under version control; their history is recorded here.
 
-## Unreleased
-- Living Chrome window and `status()` group implants by quirk
-  (Glitchy, Tuned, Clean) with colored headers, sorted by name.
+## v0.3.0 - 2026-10-27
+- Usage XP: implants learn from doing their own job while fighting
+  (RAM spent, damage taken, healing, stamina spent, kills, and
+  Sandevistan / Berserk / Kerenzikov activations), per body area.
+- Mastery: at Lv 5 every implant adds a second, area-specific bonus.
+- Ripperdoc services: with the ripperdoc screen open, pay eddies in the
+  Living Chrome window to stabilize a Glitchy implant or re-roll a quirk.
+- Malfunctions differ by body area: Optics Fault, RAM Leak, Motor Stutter,
+  Plating Fault, Servo Jam. `forceMalfunction(kind)` tests each one.
+- Window and `status()` group implants by quirk (Glitchy, Tuned, Clean)
+  with colored headers, plus STABLE / MASTERED tags.
+- Settings in the Living Chrome window and, with Native Settings UI, in the
+  game's Settings menu; saved to `living_chrome_settings.txt`.
+- On-screen messages queue instead of overwriting each other; simultaneous
+  level-ups become one message.
+- Balance: leveling is slower (400 / 1100 / 2200 / 3800 / 6000 XP, was
+  150 / 400 / 800 / 1400 / 2200) and combat time gives 0.5 XP/s (was 1),
+  since usage XP now adds on top. Existing levels are kept.
+- Save file gains an 8th column (stable flag); older files still load.
+
+Not yet tested in-game: everything in v0.3.0.
 
 ## v0.2.1 - 2026-10-27
 - Fix: upgrading an implant no longer resets its level. Any tier ending on an

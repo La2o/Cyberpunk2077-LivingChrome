@@ -3,10 +3,11 @@
 Cyber Engine Tweaks (Lua) mod. The user does not write code; Claude writes it and gives plain install/test steps.
 
 ## What it does
-- Equipped cyberware earns XP from combat time and nearby kills, levels 1-5.
+- Equipped cyberware earns XP from combat time, nearby kills, and usage per body area (`uses` in AREAS), levels 1-5; Lv 5 adds a mastery bonus.
 - Each level adds a stat bonus by body area (see `AREAS` in init.lua).
 - Each implant rolls a quirk once: Clean / Tuned (faster XP) / Glitchy (2x XP, bigger bonus, random combat malfunctions until max level).
-- CET overlay window shows level, XP bar, bonus, kills.
+- Each area has its own malfunction (`fault` in AREAS -> `FAULTS`). Ripperdoc services stabilize / re-roll for eddies.
+- CET overlay window shows implants grouped by quirk, level, XP bar, bonus, mastery, kills, ripperdoc buttons, settings.
 
 ## Files
 - `bin/x64/plugins/cyber_engine_tweaks/mods/LivingChrome/init.lua` - the whole mod. Balance values are in `LC.config` at the top.
@@ -14,7 +15,9 @@ Cyber Engine Tweaks (Lua) mod. The user does not write code; Claude writes it an
 - Progress saves per playthrough to `living_chrome_save_<id>.txt` in the mod folder. The id is a random int stored in quest fact `living_chrome_save_id` (lives inside the game save). v0.1.0's shared `living_chrome_data.txt` is auto-imported into the first playthrough that gets an id, then renamed to `living_chrome_data_old.txt`.
 
 ## Status
-- v0.2.1 installed in the user's game; v0.2.0 was tested in-game on 2026-10-27 (game 2.5, CET 1.38.1):
+- v0.3.0 installed in the user's game, NOT yet tested in-game: usage XP (stat-pool polling every 0.5s + `PlayerPuppet.OnStatusEffectApplied` for Sandevistan/Berserk/Kerenzikov buffs), Lv5 mastery bonuses, ripperdoc services (`RipperDocGameController` OnInitialize/OnUninitialize; money via TransactionSystem `Items.money`), malfunction types per area (`FAULTS`), settings (`SETTINGS` table: overlay + optional Native Settings UI), message queue. Uncertain APIs to watch for: `GetStatPoolValue(..., true)` returning percent, `RequestSettingStatPoolValue`, RipperDoc hook firing. Full mocked run: `scratchpad/sim/sim6.py` pattern (fake game + undefined-global detector).
+- Git repo initialized 2026-10-27 (branch main, local only). Update CHANGELOG.md with each version.
+- v0.2.0 was tested in-game on 2026-10-27 (game 2.5, CET 1.38.1):
   - Confirmed working: mod loads, playthrough ID, implant scan (22 implants with real names), quirk rolls, addXp/level-ups, stabilizing, malfunction message + screen glitch on and off after 6s, clearGlitch(), real combat XP, kill counting, stat bonuses in the character menu.
   - Not yet tested: switching to another playthrough (Nomad ManualSave-14), uninstall(), and the two v0.2.1 fixes below in-game.
 - Test setup on the user's PC: game at `D:\SteamLibrary\steamapps\common\Cyberpunk 2077` (also has RED4ext + Codeware). Copy init.lua there after edits. CET logs: `bin\x64\plugins\cyber_engine_tweaks\scripting.log` (buffered; flushes late). Test save: ManualSave-8 (Street Kid, from Nexus mod 19843; original in the scratchpad/rar).
@@ -29,8 +32,7 @@ Cyber Engine Tweaks (Lua) mod. The user does not write code; Claude writes it an
 
 ## Ideas for next versions
 - Black-market "scav chrome" vendor with random modifiers
-- Rejection events beyond the glitch effect (weapon jam, brief slowdown)
-- Native Settings UI menu for the config values
+- Per-implant (not per-area) mastery perks, e.g. Kerenzikov lasts longer
 - Package for Nexus Mods (zip with `bin/` at root, README, screenshots)
 
 ## Packaging

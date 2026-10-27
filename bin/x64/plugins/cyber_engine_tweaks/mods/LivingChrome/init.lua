@@ -1,5 +1,5 @@
 --[[
-  Living Chrome v0.2.1 - Cyberpunk 2077 mod (Cyber Engine Tweaks)
+  Living Chrome v0.3.0 - Cyberpunk 2077 mod (Cyber Engine Tweaks)
 
   Your cyberware levels up as you use it, and every implant rolls a hidden
   quirk the first time you install it:
@@ -8,9 +8,16 @@
     Glitchy - learns 2x faster and gives 25% bigger bonuses, but malfunctions
               in combat until it reaches max level (Stabilized)
 
-  Open the CET overlay to see the Living Chrome window.
+  Implants learn from combat time, kills, and from doing their own job
+  (RAM spent, damage soaked, healing, stamina used, Sandevistan/Berserk/
+  Kerenzikov activations). At Lv 5 they are MASTERED and add a second bonus.
+  Each body area malfunctions in its own way. Ripperdocs can stabilize a
+  Glitchy implant or re-roll a quirk for eddies.
+
+  Open the CET overlay to see the Living Chrome window (with Settings).
   Console helpers: GetMod("LivingChrome").status()  /  .addXp(500)
-                   .forceMalfunction()  /  .reset()  /  .importOld()
+                   .forceMalfunction(kind)  /  .reset()  /  .importOld()
+                   kind = "optics" | "cortex" | "neural" | "body" | "limbs"
 
   Progress is kept per playthrough: each save gets a hidden ID stored as a
   quest fact (saved inside the game save), and the mod keeps one data file
@@ -18,15 +25,26 @@
 ]]
 
 local LC = {
-  version = "0.2.1",
+  version = "0.3.0",
 
   -- Tweak these to taste
   config = {
-    xpPerCombatSecond = 1,        -- XP every equipped implant earns per second of combat
+    xpPerCombatSecond = 0.5,      -- XP every equipped implant earns per second of combat
     xpPerKill = 15,               -- XP per nearby kill/takedown while fighting
     killRadius = 40,              -- metres; deaths farther away than this don't count
     killGraceSeconds = 10,        -- kills still count this long after combat ends
-    levelThresholds = { 150, 400, 800, 1400, 2200 }, -- total XP for Lv 1..5
+
+    -- Usage XP: implants also learn from doing their own job while fighting
+    usageXpMult = 1.0,            -- scales all usage XP below
+    usageXp = {
+      ram = 0.6,                  -- per % of RAM spent (quickhacks)       -> Frontal Cortex, OS
+      damage = 0.5,               -- per % of Health lost                  -> Skeleton, Immune, Integumentary
+      heal = 0.5,                 -- per % of Health regained              -> Circulatory
+      stamina = 0.15,             -- per % of Stamina spent (dash, melee)  -> Legs, Arms
+      activation = 30,            -- per Sandevistan/Berserk/Kerenzikov use -> OS, Nervous System
+      kill = 10,                  -- extra per kill                        -> Eyes, Hands, Arms
+    },
+    levelThresholds = { 400, 1100, 2200, 3800, 6000 }, -- total XP for Lv 1..5
 
     tunedChance = 0.25,
     glitchyChance = 0.15,         -- the rest is Clean
@@ -37,10 +55,16 @@ local LC = {
     malfunctionCheckEvery = 15,   -- seconds of combat between malfunction rolls
     malfunctionChance = 0.035,    -- chance per roll (~13% per minute of combat)
     malfunctionDuration = 6,      -- seconds
-    malfunctionCritPenalty = -15, -- crit chance while malfunctioning
-    malfunctionEffect = "BaseStatusEffect.JohnnySicknessLow", -- screen glitch ("" = off)
+    malfunctionCritPenalty = -15, -- crit chance during an optics fault
+    screenGlitch = true,          -- screen glitch on optics/cortex faults
+    malfunctionEffect = "BaseStatusEffect.JohnnySicknessLow", -- the glitch effect used
+
+    stabilizeCost = 6000,         -- eddies to stabilize a Glitchy implant at a ripperdoc
+    rerollCost = 3000,            -- eddies to re-roll an implant's quirk at a ripperdoc
+    servicesAnywhere = false,     -- allow ripperdoc services outside the ripperdoc screen
 
     onScreenMessages = true,
+    messageGap = 2.5,             -- seconds between queued on-screen messages
     reapplyEvery = 15,
     saveEvery = 30,
   },
@@ -60,26 +84,84 @@ local LC = {
   pending = {},          -- IDs given to saves that haven't been saved with them yet
   checkSave = true,      -- re-read the save ID on the next update
   disabled = false,      -- set by uninstall(); mod does nothing until restart
-  timers = { scan = 0, combat = 0, reapply = 0, save = 0, saveCheck = 0 },
+  atRipperdoc = false,   -- ripperdoc screen is open
+  pools = {},            -- last RAM/Health/Stamina % seen, for usage XP
+  ignorePoolsUntil = 0,  -- skip usage XP while our own malfunction drains a pool
+  recentActivations = {},
+  msgQueue = {},
+  msgTimer = 0,
+  levelUps = {},         -- level-ups this frame, shown as one message
+  timers = { scan = 0, combat = 0, reapply = 0, save = 0, saveCheck = 0, usage = 0 },
 }
 
--- Which stat each cyberware area improves, and how much per level
+-- Per cyberware area: the stat it improves per level, what it learns from
+-- (usage XP signals), its Lv 5 mastery bonus, and how it malfunctions.
 local AREAS = {
-  { key = "FrontalCortexCW",         label = "Frontal Cortex",       stat = "CritChance", perLevel = 1 },
-  { key = "SystemReplacementCW",     label = "Operating System",     stat = "CritChance", perLevel = 1.5 },
-  { key = "EyesCW",                  label = "Ocular System",        stat = "CritChance", perLevel = 1 },
-  { key = "MusculoskeletalSystemCW", label = "Skeleton",             stat = "Health",     perLevel = 8 },
-  { key = "NervousSystemCW",         label = "Nervous System",       stat = "CritDamage", perLevel = 3 },
-  { key = "CardiovascularSystemCW",  label = "Circulatory System",   stat = "Health",     perLevel = 6 },
-  { key = "ImmuneSystemCW",          label = "Immune System",        stat = "Armor",      perLevel = 6 },
-  { key = "IntegumentarySystemCW",   label = "Integumentary System", stat = "Armor",      perLevel = 6 },
-  { key = "HandsCW",                 label = "Hands",                stat = "CritDamage", perLevel = 2 },
-  { key = "ArmsCW",                  label = "Arms",                 stat = "CritDamage", perLevel = 4 },
-  { key = "LegsCW",                  label = "Legs",                 stat = "Stamina",    perLevel = 5 },
+  { key = "FrontalCortexCW", label = "Frontal Cortex", stat = "CritChance", perLevel = 1,
+    uses = { "ram" }, mastery = { stat = "Memory", value = 1 }, fault = "cortex" },
+  { key = "SystemReplacementCW", label = "Operating System", stat = "CritChance", perLevel = 1.5,
+    uses = { "ram", "os" }, mastery = { stat = "Memory", value = 2 }, fault = "cortex" },
+  { key = "EyesCW", label = "Ocular System", stat = "CritChance", perLevel = 1,
+    uses = { "kill" }, mastery = { stat = "CritDamage", value = 5 }, fault = "optics" },
+  { key = "MusculoskeletalSystemCW", label = "Skeleton", stat = "Health", perLevel = 8,
+    uses = { "damage" }, mastery = { stat = "Armor", value = 10 }, fault = "body" },
+  { key = "NervousSystemCW", label = "Nervous System", stat = "CritDamage", perLevel = 3,
+    uses = { "reflex" }, mastery = { stat = "CritChance", value = 2 }, fault = "neural" },
+  { key = "CardiovascularSystemCW", label = "Circulatory System", stat = "Health", perLevel = 6,
+    uses = { "heal" }, mastery = { stat = "Stamina", value = 10 }, fault = "body" },
+  { key = "ImmuneSystemCW", label = "Immune System", stat = "Armor", perLevel = 6,
+    uses = { "damage" }, mastery = { stat = "Health", value = 20 }, fault = "body" },
+  { key = "IntegumentarySystemCW", label = "Integumentary System", stat = "Armor", perLevel = 6,
+    uses = { "damage" }, mastery = { stat = "Health", value = 20 }, fault = "body" },
+  { key = "HandsCW", label = "Hands", stat = "CritDamage", perLevel = 2,
+    uses = { "kill" }, mastery = { stat = "CritChance", value = 2 }, fault = "limbs" },
+  { key = "ArmsCW", label = "Arms", stat = "CritDamage", perLevel = 4,
+    uses = { "kill", "stamina" }, mastery = { stat = "Health", value = 15 }, fault = "limbs" },
+  { key = "LegsCW", label = "Legs", stat = "Stamina", perLevel = 5,
+    uses = { "stamina" }, mastery = { stat = "Armor", value = 10 }, fault = "neural" },
 }
 
 local AREA_BY_KEY = {}
-for _, a in ipairs(AREAS) do AREA_BY_KEY[a.key] = a end
+for _, a in ipairs(AREAS) do
+  AREA_BY_KEY[a.key] = a
+  a.useSet = {}
+  for _, u in ipairs(a.uses) do a.useSet[u] = true end
+end
+
+-- Player buffs that mean an implant was just activated -> usage signal
+local ACTIVATIONS = {
+  { pattern = "SandevistanPlayerBuff", signal = "os" },
+  { pattern = "BerserkPlayerBuff", signal = "os" },
+  { pattern = "KerenzikovPlayerBuff", signal = "reflex" },
+}
+
+-- How each kind of chrome fails. mods are temporary stat penalties
+-- ("critPenalty" = config.malfunctionCritPenalty); drain empties a stat pool.
+local FAULTS = {
+  optics = { label = "OPTICS FAULT", glitch = true, mods = { { "CritChance", "critPenalty" } } },
+  cortex = { label = "RAM LEAK", glitch = true, drain = "Memory", mods = {} },
+  neural = { label = "MOTOR STUTTER", drain = "Stamina", mods = { { "CritChance", -10 } } },
+  body = { label = "PLATING FAULT", mods = { { "Armor", -100 } } },
+  limbs = { label = "SERVO JAM", mods = { { "CritDamage", -40 }, { "CritChance", -10 } } },
+}
+
+-- Shown in the Living Chrome window and in the game's Settings menu (if the
+-- Native Settings UI mod is installed). Saved to SETTINGS_FILE.
+local SETTINGS = {
+  { key = "xpPerCombatSecond", label = "XP per second of combat", kind = "float", min = 0, max = 5, fmt = "%.1f" },
+  { key = "xpPerKill", label = "XP per kill", kind = "int", min = 0, max = 100 },
+  { key = "usageXpMult", label = "Usage XP multiplier", kind = "float", min = 0, max = 5, fmt = "%.1f" },
+  { key = "malfunctionChance", label = "Malfunction chance per roll", kind = "float", min = 0, max = 0.2, fmt = "%.3f" },
+  { key = "malfunctionDuration", label = "Malfunction length (seconds)", kind = "int", min = 1, max = 20 },
+  { key = "screenGlitch", label = "Screen glitch on malfunctions", kind = "bool" },
+  { key = "onScreenMessages", label = "On-screen messages", kind = "bool" },
+  { key = "stabilizeCost", label = "Stabilize cost (eddies)", kind = "int", min = 0, max = 50000, step = 500 },
+  { key = "rerollCost", label = "Re-roll cost (eddies)", kind = "int", min = 0, max = 50000, step = 500 },
+  { key = "servicesAnywhere", label = "Ripperdoc services anywhere (cheat)", kind = "bool" },
+}
+local SETTINGS_FILE = "living_chrome_settings.txt"
+local DEFAULTS = {}
+for _, st in ipairs(SETTINGS) do DEFAULTS[st.key] = LC.config[st.key] end
 
 -- Overlay/status list groups implants by quirk in this order
 local QUIRK_ORDER = { glitchy = 1, tuned = 2, clean = 3 }
@@ -110,6 +192,7 @@ local STAT_LABEL = {
   Health = " Max Health",
   Armor = " Armor",
   Stamina = " Max Stamina",
+  Memory = " Max RAM",
 }
 
 local QUIRK_LABEL = { clean = "Clean", tuned = "Tuned", glitchy = "Glitchy" }
@@ -164,11 +247,80 @@ local function getPlayer()
   return p
 end
 
-local function notify(msg)
-  print("[Living Chrome] " .. msg)
-  if not LC.config.onScreenMessages then return end
+local function showOnScreen(msg)
   local p = getPlayer()
   if p then safe(function() p:SetWarningMessage(msg) end) end
+end
+
+-- Urgent messages (malfunctions, purchases) show at once; the rest wait in a
+-- queue so they don't overwrite each other.
+local function notify(msg, urgent)
+  print("[Living Chrome] " .. msg)
+  if not LC.config.onScreenMessages then return end
+  if urgent then
+    showOnScreen(msg)
+    LC.msgTimer = LC.config.messageGap
+  else
+    table.insert(LC.msgQueue, msg)
+    while #LC.msgQueue > 6 do table.remove(LC.msgQueue, 1) end
+  end
+end
+
+-- Called every frame: turns this frame's level-ups into one message and shows
+-- the next queued message when the previous one has had time to be read.
+local function pumpMessages(dt)
+  if #LC.levelUps > 0 then
+    local ups = LC.levelUps
+    LC.levelUps = {}
+    if LC.config.onScreenMessages then
+      if #ups == 1 then
+        table.insert(LC.msgQueue, ups[1].full)
+      else
+        local parts = {}
+        for i = 1, math.min(3, #ups) do parts[i] = ups[i].short end
+        local msg = "Chrome upgraded: " .. table.concat(parts, ", ")
+        if #ups > 3 then msg = msg .. string.format(" (+%d more)", #ups - 3) end
+        table.insert(LC.msgQueue, msg)
+      end
+    end
+  end
+  LC.msgTimer = LC.msgTimer - dt
+  if LC.msgTimer <= 0 and #LC.msgQueue > 0 then
+    showOnScreen(table.remove(LC.msgQueue, 1))
+    LC.msgTimer = LC.config.messageGap
+  end
+end
+
+local function saveSettings()
+  local f = io.open(SETTINGS_FILE, "w")
+  if not f then return end
+  for _, st in ipairs(SETTINGS) do f:write(st.key, "=", tostring(LC.config[st.key]), "\n") end
+  f:close()
+end
+
+local function loadSettings()
+  local f = io.open(SETTINGS_FILE, "r")
+  if not f then return end
+  local byKey = {}
+  for _, st in ipairs(SETTINGS) do byKey[st.key] = st end
+  for line in f:lines() do
+    local k, v = line:match("^([%w_]+)=(.*)$")
+    local st = k and byKey[k]
+    if st then
+      if st.kind == "bool" then
+        LC.config[k] = (v == "true")
+      else
+        local n = tonumber(v)
+        if n then LC.config[k] = math.max(st.min, math.min(st.max, n)) end
+      end
+    end
+  end
+  f:close()
+end
+
+local function setSetting(key, value)
+  LC.config[key] = value
+  saveSettings()
 end
 
 local function maxLevel()
@@ -208,6 +360,7 @@ local function saveData(force)
       tostring(r.level or 0),
       tostring(r.kills or 0),
       name,
+      r.stable and "1" or "0",
     }, "\t"), "\n")
   end
   f:close()
@@ -235,6 +388,7 @@ local function readFile(path)
           level = tonumber(parts[5]) or 0,
           kills = tonumber(parts[6]) or 0,
           name = parts[7],
+          stable = parts[8] == "1",
         }
       end
     end
@@ -395,18 +549,45 @@ local function onNewImplant(rec)
   if rec.quirk == "tuned" then
     notify(rec.name .. ": TUNED chrome. It learns fast.")
   elseif rec.quirk == "glitchy" then
-    notify(rec.name .. ": GLITCHY chrome. Expect malfunctions until Lv " .. maxLevel() .. ".")
+    notify(rec.name .. ": GLITCHY chrome. Malfunctions until Lv " .. maxLevel() .. " or a ripperdoc stabilizes it.")
   else
     print("[Living Chrome] " .. rec.name .. ": clean chrome.")
   end
 end
 
+-- Glitchy chrome malfunctions until it hits max level or a ripperdoc stabilizes it
+local function isUnstable(rec)
+  return rec.quirk == "glitchy" and not rec.stable and (rec.level or 0) < maxLevel()
+end
+
+-- Extra bonus an implant gives once it reaches max level
+local function masteryFor(rec)
+  local area = AREA_BY_KEY[rec.area]
+  if area == nil or area.mastery == nil or (rec.level or 0) < maxLevel() then return nil, 0 end
+  return area.mastery.stat, area.mastery.value
+end
+
+local function masteryText(rec)
+  local stat, v = masteryFor(rec)
+  if stat == nil then return "" end
+  return "+" .. fmtNum(v) .. (STAT_LABEL[stat] or (" " .. stat))
+end
+
 local function onLevelUp(rec)
-  if rec.quirk == "glitchy" and rec.level >= maxLevel() then
-    notify(rec.name .. " reached Lv " .. rec.level .. " and STABILIZED. No more malfunctions.")
+  local full, short
+  if rec.level >= maxLevel() then
+    if rec.quirk == "glitchy" and not rec.stable then
+      full = rec.name .. " MASTERED and STABILIZED: " .. masteryText(rec)
+    else
+      full = rec.name .. " MASTERED: " .. masteryText(rec)
+    end
+    short = rec.name .. " MASTERED"
   else
-    notify(rec.name .. " reached Lv " .. rec.level .. "!")
+    full = rec.name .. " reached Lv " .. rec.level .. "!"
+    short = rec.name .. " Lv " .. rec.level
   end
+  print("[Living Chrome] " .. full)
+  table.insert(LC.levelUps, { full = full, short = short })
 end
 
 local function getRecord(info)
@@ -419,6 +600,7 @@ local function getRecord(info)
   end
   rec.name = info.name
   rec.area = info.area.key
+  rec.key = info.key
   return rec
 end
 
@@ -572,17 +754,21 @@ local function applyModifiers(player)
   local ss = Game.GetStatsSystem()
   local additive = enumValue("gameStatModifierType", "Additive")
 
+  local function add(stat, v)
+    local statEnum = enumValue("gamedataStatType", stat)
+    local mod = safe(function() return Game.CreateStatModifier(statEnum, additive, v) end)
+    if mod and pcall(function() ss:AddModifier(eid, mod) end) then
+      table.insert(LC.applied, mod)
+    end
+  end
+
   for key in pairs(LC.equipped) do
     local rec = LC.data.implants[key]
     if rec then
       local stat, v = bonusFor(rec)
-      if stat then
-        local statEnum = enumValue("gamedataStatType", stat)
-        local mod = safe(function() return Game.CreateStatModifier(statEnum, additive, v) end)
-        if mod and pcall(function() ss:AddModifier(eid, mod) end) then
-          table.insert(LC.applied, mod)
-        end
-      end
+      if stat then add(stat, v) end
+      local mstat, mv = masteryFor(rec)
+      if mstat then add(mstat, mv) end
     end
   end
 end
@@ -595,7 +781,7 @@ local function unstableGlitchyEquipped()
   local list = {}
   for key in pairs(LC.equipped) do
     local r = LC.data.implants[key]
-    if r and r.quirk == "glitchy" and (r.level or 0) < maxLevel() then
+    if r and isUnstable(r) then
       table.insert(list, r)
     end
   end
@@ -682,25 +868,46 @@ local function cleanupStaleGlitch(player)
   end
 end
 
+-- Temporary stat penalty; never saved (StatsSystem modifiers aren't persisted)
+local function addTempModifier(player, stat, value)
+  local eid = safe(function() return player:GetEntityID() end)
+  if not eid then return nil end
+  local mod = safe(function()
+    return Game.CreateStatModifier(enumValue("gamedataStatType", stat),
+      enumValue("gameStatModifierType", "Additive"), value)
+  end)
+  if mod and pcall(function() Game.GetStatsSystem():AddModifier(eid, mod) end) then return mod end
+  return nil
+end
+
+-- Empty RAM or Stamina
+local function drainPool(player, pool)
+  LC.ignorePoolsUntil = LC.clock + 1.5 -- don't count our own drain as usage
+  pcall(function()
+    Game.GetStatPoolsSystem():RequestSettingStatPoolValue(player:GetEntityID(),
+      enumValue("gamedataStatPoolType", pool), 0, player)
+  end)
+end
+
 local function startMalfunction(player, rec)
   if LC.malfunction then return end
-  local mod = nil
-  local eid = safe(function() return player:GetEntityID() end)
-  if eid then
-    local statEnum = enumValue("gamedataStatType", "CritChance")
-    local additive = enumValue("gameStatModifierType", "Additive")
-    mod = safe(function()
-      return Game.CreateStatModifier(statEnum, additive, LC.config.malfunctionCritPenalty)
-    end)
-    if mod and not pcall(function() Game.GetStatsSystem():AddModifier(eid, mod) end) then
-      mod = nil
-    end
+  local area = AREA_BY_KEY[rec.area or ""]
+  local fault = FAULTS[area and area.fault or "optics"] or FAULTS.optics
+
+  local mods = {}
+  for _, m in ipairs(fault.mods) do
+    local value = m[2]
+    if value == "critPenalty" then value = LC.config.malfunctionCritPenalty end
+    local mod = addTempModifier(player, m[1], value)
+    if mod then table.insert(mods, mod) end
   end
+  if fault.drain then drainPool(player, fault.drain) end
+
   -- Only add the screen glitch if we can confirm the player doesn't already
   -- have it from the story, so we never remove a quest's own effect.
   local effectOk = false
   local hasEffect = nil
-  if LC.config.malfunctionEffect ~= "" then
+  if fault.glitch and LC.config.screenGlitch and LC.config.malfunctionEffect ~= "" then
     hasEffect = playerHasEffect(player, LC.config.malfunctionEffect)
   end
   if hasEffect == false then
@@ -712,24 +919,29 @@ local function startMalfunction(player, rec)
       print("[Living Chrome] Screen glitch failed: " .. tostring(err))
     end
   end
-  print(string.format("[Living Chrome] Malfunction: glitch check=%s, glitch applied=%s, now has effect=%s",
-    tostring(hasEffect), tostring(effectOk), "(updates next frame)"))
+  print(string.format("[Living Chrome] Malfunction %s (glitch check=%s, applied=%s)",
+    fault.label, tostring(hasEffect), tostring(effectOk)))
   LC.malfunction = {
     t = LC.config.malfunctionDuration,
-    mod = mod,
+    mods = mods,
     effect = effectOk and LC.config.malfunctionEffect or nil,
     name = rec.name,
+    label = fault.label,
   }
-  notify(rec.name .. " is MALFUNCTIONING")
+  notify(rec.name .. ": " .. fault.label .. "!", true)
 end
 
 local function endMalfunction(player)
   local m = LC.malfunction
   if not m then return end
   LC.malfunction = nil
-  if m.mod and player then
+  if player then
     local eid = safe(function() return player:GetEntityID() end)
-    if eid then pcall(function() Game.GetStatsSystem():RemoveModifier(eid, m.mod) end) end
+    if eid then
+      for _, mod in ipairs(m.mods or {}) do
+        pcall(function() Game.GetStatsSystem():RemoveModifier(eid, mod) end)
+      end
+    end
   end
   if m.effect then requestGlitchRemoval(player) end
 end
@@ -757,6 +969,74 @@ local function isInCombat(player)
   return v == true
 end
 
+local function isFighting(player)
+  return isInCombat(player) or (LC.clock - LC.lastCombat) <= LC.config.killGraceSeconds
+end
+
+---------------------------------------------------------------------------
+-- Usage XP: implants learn from doing their own job
+---------------------------------------------------------------------------
+
+local function awardUse(signal, amount)
+  if amount <= 0 then return end
+  amount = amount * LC.config.usageXpMult
+  for key in pairs(LC.equipped) do
+    local rec = LC.data.implants[key]
+    local area = rec and AREA_BY_KEY[rec.area]
+    if area and area.useSet[signal] then addXp(rec, amount) end
+  end
+end
+
+local function poolPercent(player, pool)
+  return safe(function()
+    return Game.GetStatPoolsSystem():GetStatPoolValue(player:GetEntityID(),
+      enumValue("gamedataStatPoolType", pool), true)
+  end)
+end
+
+-- Compare RAM / Health / Stamina with the previous check; changes while
+-- fighting become usage XP for the matching body areas.
+local function tickUsage(player, fighting)
+  local U = LC.config.usageXp
+  local now = {
+    Memory = poolPercent(player, "Memory"),
+    Health = poolPercent(player, "Health"),
+    Stamina = poolPercent(player, "Stamina"),
+  }
+  local prev = LC.pools
+  LC.pools = now
+  if not fighting or LC.clock < LC.ignorePoolsUntil then return end
+  local function delta(pool)
+    if now[pool] == nil or prev[pool] == nil then return 0 end
+    return now[pool] - prev[pool]
+  end
+  local ram, hp, st = delta("Memory"), delta("Health"), delta("Stamina")
+  if ram < 0 then awardUse("ram", -ram * U.ram) end
+  if hp < 0 then awardUse("damage", -hp * U.damage) end
+  if hp > 0 then awardUse("heal", hp * U.heal) end
+  if st < 0 then awardUse("stamina", -st * U.stamina) end
+end
+
+-- Sandevistan / Berserk / Kerenzikov activations (status effects on V)
+local function onPlayerEffect(evt)
+  if LC.disabled or LC.saveId == nil then return end
+  local player = getPlayer()
+  if not player or not isFighting(player) then return end
+  local id = safe(function() return TDBID.ToStringDEBUG(evt.staticData:GetID()) end)
+  if id == nil then return end
+  for _, a in ipairs(ACTIVATIONS) do
+    if id:find(a.pattern, 1, true) then
+      local last = LC.recentActivations[a.signal]
+      if last == nil or LC.clock - last > 3 then
+        LC.recentActivations[a.signal] = LC.clock
+        awardUse(a.signal, LC.config.usageXp.activation)
+        print("[Living Chrome] Implant activation: " .. id)
+      end
+      return
+    end
+  end
+end
+
 local function onNpcDeath(npc)
   if LC.disabled or LC.saveId == nil then return end
   local player = getPlayer()
@@ -768,8 +1048,7 @@ local function onNpcDeath(npc)
   if last and LC.clock - last < 60 then return end -- already counted
   LC.recentKills[h] = LC.clock
 
-  local fighting = isInCombat(player) or (LC.clock - LC.lastCombat) <= LC.config.killGraceSeconds
-  if not fighting then return end
+  if not isFighting(player) then return end
 
   local dist = safe(function()
     return Vector4.Distance(player:GetWorldPosition(), npc:GetWorldPosition())
@@ -783,6 +1062,78 @@ local function onNpcDeath(npc)
       addXp(rec, LC.config.xpPerKill)
     end
   end
+  awardUse("kill", LC.config.usageXp.kill)
+end
+
+---------------------------------------------------------------------------
+-- Ripperdoc services (paid in eddies while the ripperdoc screen is open)
+---------------------------------------------------------------------------
+
+local function moneyItem()
+  return safe(function() return ItemID.FromTDBID(TweakDBID.new("Items.money")) end)
+end
+
+local function getMoney(player)
+  local id = moneyItem()
+  if id == nil then return nil end
+  return safe(function() return Game.GetTransactionSystem():GetItemQuantity(player, id) end)
+end
+
+-- Takes the eddies; true only if the balance really went down
+local function pay(player, amount)
+  if amount <= 0 then return true end
+  local before = getMoney(player)
+  if before == nil or before < amount then return false end
+  local id = moneyItem()
+  pcall(function() Game.GetTransactionSystem():RemoveItem(player, id, amount) end)
+  local after = getMoney(player)
+  return after ~= nil and after <= before - amount
+end
+
+local function servicesOpen()
+  return LC.atRipperdoc or LC.config.servicesAnywhere
+end
+
+local function stabilizeImplant(rec)
+  local player = getPlayer()
+  if not player or not servicesOpen() or not isUnstable(rec) then return end
+  if not pay(player, LC.config.stabilizeCost) then
+    notify("Not enough eddies to stabilize " .. rec.name .. ".", true)
+    return
+  end
+  rec.stable = true
+  LC.dirty = true
+  saveData(true)
+  notify(rec.name .. " STABILIZED by the ripperdoc. No more malfunctions.", true)
+end
+
+local function rerollImplant(rec)
+  local player = getPlayer()
+  if not player or not servicesOpen() then return end
+  if not pay(player, LC.config.rerollCost) then
+    notify("Not enough eddies to re-roll " .. rec.name .. ".", true)
+    return
+  end
+  local old, new = rec.quirk, rec.quirk
+  for _ = 1, 20 do
+    new = rollQuirk()
+    if new ~= old then break end
+  end
+  rec.quirk = new
+  rec.stable = false
+  LC.dirty = true
+  LC.needsReapply = true
+  saveData(true)
+  notify(string.format("%s re-rolled: %s -> %s", rec.name,
+    QUIRK_LABEL[old] or "?", QUIRK_LABEL[new] or "?"), true)
+end
+
+-- Tags shown after an implant's name
+local function implantTags(r)
+  local tags = ""
+  if r.quirk == "glitchy" and not isUnstable(r) then tags = tags .. "  STABLE" end
+  if (r.level or 0) >= maxLevel() then tags = tags .. "  MASTERED" end
+  return tags
 end
 
 ---------------------------------------------------------------------------
@@ -798,9 +1149,10 @@ function LC.status()
       print("[Living Chrome] -- " .. (QUIRK_LABEL[r.quirk] or "?") .. " --")
     end
     local stat, v = bonusFor(r)
-    print(string.format("[Living Chrome] %s | %s | Lv %d | %d XP | %d kills | %s",
+    print(string.format("[Living Chrome] %s | %s | Lv %d | %d XP | %d kills | %s%s%s",
       r.name, QUIRK_LABEL[r.quirk] or "?", r.level or 0, math.floor(r.xp or 0), r.kills or 0,
-      stat and ("+" .. fmtNum(v) .. STAT_LABEL[stat]) or "no bonus yet"))
+      stat and ("+" .. fmtNum(v) .. STAT_LABEL[stat]) or "no bonus yet",
+      masteryFor(r) and (" | mastery " .. masteryText(r)) or "", implantTags(r)))
   end
   if #list == 0 then print("[Living Chrome] No implants detected.") end
 end
@@ -814,11 +1166,22 @@ function LC.addXp(amount)
   print("[Living Chrome] Added XP to equipped implants.")
 end
 
-function LC.forceMalfunction()
+-- Test a malfunction; kind = "optics", "cortex", "neural", "body" or "limbs"
+function LC.forceMalfunction(kind)
   local player = getPlayer()
   if not player then return end
-  local list = unstableGlitchyEquipped()
-  local rec = list[1] or { name = "Test implant" }
+  if LC.malfunction then endMalfunction(player) end
+  local rec
+  if kind and FAULTS[kind] then
+    for _, a in ipairs(AREAS) do
+      if a.fault == kind then
+        rec = { name = "Test " .. a.label, area = a.key }
+        break
+      end
+    end
+  else
+    rec = unstableGlitchyEquipped()[1] or { name = "Test implant", area = "EyesCW" }
+  end
   startMalfunction(player, rec)
 end
 
@@ -880,6 +1243,9 @@ local function unloadSave(player)
   LC.glitchRemoval = nil
   LC.combatAccum = 0
   LC.recentKills = {}
+  LC.pools = {}
+  LC.msgQueue = {}
+  LC.levelUps = {}
 end
 
 -- Makes sure the loaded data belongs to the save the player is in.
@@ -913,7 +1279,54 @@ function LC.uninstall()
   LC.disabled = true
   print("[Living Chrome] Disabled. Bonuses and effects removed from V.")
   print("[Living Chrome] Now save your game, quit, and delete the LivingChrome mod folder.")
-  notify("Living Chrome removed. Save, quit, delete the mod folder.")
+  notify("Living Chrome removed. Save, quit, delete the mod folder.", true)
+end
+
+---------------------------------------------------------------------------
+-- Settings menus
+---------------------------------------------------------------------------
+
+-- Adds a Living Chrome tab to the game's Settings menu if the optional
+-- Native Settings UI mod is installed. Returns true if it was added.
+local function registerNativeSettings()
+  local ns = safe(function() return GetMod("nativeSettings") end)
+  if ns == nil then return false end
+  return pcall(function()
+    ns.addTab("/livingchrome", "Living Chrome")
+    ns.addSubcategory("/livingchrome/main", "Living Chrome " .. LC.version)
+    for _, st in ipairs(SETTINGS) do
+      local cb = function(v) setSetting(st.key, v) end
+      if st.kind == "bool" then
+        ns.addSwitch("/livingchrome/main", st.label, st.label, LC.config[st.key], DEFAULTS[st.key], cb)
+      elseif st.kind == "int" then
+        ns.addRangeInt("/livingchrome/main", st.label, st.label, st.min, st.max, st.step or 1,
+          math.floor(LC.config[st.key]), DEFAULTS[st.key], cb)
+      else
+        ns.addRangeFloat("/livingchrome/main", st.label, st.label, st.min, st.max,
+          (st.max - st.min) / 100, st.fmt, LC.config[st.key], DEFAULTS[st.key], cb)
+      end
+    end
+  end)
+end
+
+-- Same settings inside the Living Chrome overlay window
+local function drawSettings()
+  if not ImGui.CollapsingHeader("Settings") then return end
+  for _, st in ipairs(SETTINGS) do
+    local v, changed = LC.config[st.key], false
+    if st.kind == "bool" then
+      v, changed = ImGui.Checkbox(st.label, v)
+    elseif st.kind == "int" then
+      v, changed = ImGui.SliderInt(st.label, math.floor(v), st.min, st.max)
+    else
+      v, changed = ImGui.SliderFloat(st.label, v, st.min, st.max, st.fmt)
+    end
+    if changed then setSetting(st.key, v) end
+  end
+  if ImGui.Button("Reset settings to defaults") then
+    for _, st in ipairs(SETTINGS) do LC.config[st.key] = DEFAULTS[st.key] end
+    saveSettings()
+  end
 end
 
 ---------------------------------------------------------------------------
@@ -923,6 +1336,7 @@ end
 registerForEvent("onInit", function()
   math.randomseed(os.time())
   LC.pending = loadPending()
+  loadSettings()
 
   -- A save was loaded / player respawned: old modifiers are gone, re-add ours
   pcall(function()
@@ -930,6 +1344,7 @@ registerForEvent("onInit", function()
       LC.applied = {}
       LC.malfunction = nil
       LC.glitchRemoval = nil
+      LC.pools = {}
       LC.needsReapply = true
       LC.checkSave = true
     end)
@@ -942,6 +1357,23 @@ registerForEvent("onInit", function()
   pcall(function()
     Observe("NPCPuppet", "OnDeath", function(self) onNpcDeath(self) end)
   end)
+
+  -- Sandevistan / Berserk / Kerenzikov activations, for usage XP
+  pcall(function()
+    Observe("PlayerPuppet", "OnStatusEffectApplied", function(_, evt) onPlayerEffect(evt) end)
+  end)
+
+  -- Ripperdoc screen open / closed, for ripperdoc services
+  pcall(function()
+    Observe("RipperDocGameController", "OnInitialize", function() LC.atRipperdoc = true end)
+  end)
+  pcall(function()
+    Observe("RipperDocGameController", "OnUninitialize", function() LC.atRipperdoc = false end)
+  end)
+
+  if registerNativeSettings() then
+    print("[Living Chrome] Settings added to the game's Settings menu.")
+  end
 
   print("[Living Chrome] v" .. LC.version .. " loaded.")
 end)
@@ -962,6 +1394,14 @@ registerForEvent("onUpdate", function(dt)
     T.saveCheck = 0
     if not syncSave(player) then return end
     LC.checkSave = false
+  end
+
+  pumpMessages(dt)
+
+  T.usage = T.usage + dt
+  if T.usage >= 0.5 then
+    T.usage = 0
+    tickUsage(player, isFighting(player))
   end
 
   T.scan = T.scan + dt
@@ -1024,46 +1464,71 @@ registerForEvent("onOverlayClose", function() LC.overlayOpen = false end)
 registerForEvent("onDraw", function()
   if not LC.overlayOpen then return end
   if ImGui.Begin("Living Chrome") then
+    local list = equippedSorted()
+    local services = servicesOpen() and LC.saveId ~= nil
+    if services then
+      local player = getPlayer()
+      local money = player and getMoney(player)
+      ImGui.TextColored(1, 0.8, 0.2, 1, "RIPPERDOC SERVICES" ..
+        (money and string.format("   (you have %d eddies)", money) or ""))
+      ImGui.Text(string.format("Stabilize a Glitchy implant: %d   Re-roll a quirk: %d",
+        LC.config.stabilizeCost, LC.config.rerollCost))
+      ImGui.Separator()
+    end
     ImGui.Text("Equipped implants")
     ImGui.Separator()
-    local list = equippedSorted()
-    local any = #list > 0
     local lastQuirk = nil
     for _, r in ipairs(list) do
-      do
-        if r.quirk ~= lastQuirk then
-          lastQuirk = r.quirk
-          local c = QUIRK_COLOR[r.quirk] or { 1, 1, 1 }
-          ImGui.Spacing()
-          ImGui.TextColored(c[1], c[2], c[3], 1, string.upper(QUIRK_LABEL[r.quirk] or "?"))
-        end
-        local area = AREA_BY_KEY[r.area]
-        ImGui.Text(string.format("%s  (%s)  Lv %d", r.name, area and area.label or "?", r.level or 0))
-        local lvl = r.level or 0
-        local frac, label = 1, "MAX"
-        if lvl < maxLevel() then
-          local prev = (lvl == 0) and 0 or LC.config.levelThresholds[lvl]
-          local nxt = LC.config.levelThresholds[lvl + 1]
-          frac = math.max(0, math.min(1, ((r.xp or 0) - prev) / (nxt - prev)))
-          label = string.format("%d / %d XP", math.floor(r.xp or 0), nxt)
-        end
-        ImGui.ProgressBar(frac, -1, 0, label)
-        local stat, v = bonusFor(r)
-        if stat then
-          ImGui.Text("  +" .. fmtNum(v) .. STAT_LABEL[stat] .. "   Kills: " .. (r.kills or 0))
-        else
-          ImGui.Text("  No bonus yet   Kills: " .. (r.kills or 0))
-        end
+      if r.quirk ~= lastQuirk then
+        lastQuirk = r.quirk
+        local c = QUIRK_COLOR[r.quirk] or { 1, 1, 1 }
         ImGui.Spacing()
+        ImGui.TextColored(c[1], c[2], c[3], 1, string.upper(QUIRK_LABEL[r.quirk] or "?"))
       end
+      local area = AREA_BY_KEY[r.area]
+      ImGui.Text(string.format("%s  (%s)  Lv %d", r.name, area and area.label or "?", r.level or 0))
+      local tags = implantTags(r)
+      if tags ~= "" then
+        ImGui.SameLine()
+        ImGui.TextColored(0.9, 0.75, 0.3, 1, tags)
+      end
+      local lvl = r.level or 0
+      local frac, label = 1, "MAX"
+      if lvl < maxLevel() then
+        local prev = (lvl == 0) and 0 or LC.config.levelThresholds[lvl]
+        local nxt = LC.config.levelThresholds[lvl + 1]
+        frac = math.max(0, math.min(1, ((r.xp or 0) - prev) / (nxt - prev)))
+        label = string.format("%d / %d XP", math.floor(r.xp or 0), nxt)
+      end
+      ImGui.ProgressBar(frac, -1, 0, label)
+      local stat, v = bonusFor(r)
+      if stat then
+        ImGui.Text("  +" .. fmtNum(v) .. STAT_LABEL[stat] .. "   Kills: " .. (r.kills or 0))
+      else
+        ImGui.Text("  No bonus yet   Kills: " .. (r.kills or 0))
+      end
+      if masteryFor(r) then
+        ImGui.TextColored(0.9, 0.75, 0.3, 1, "  Mastery: " .. masteryText(r))
+      end
+      if services and r.key then
+        if isUnstable(r) then
+          if ImGui.Button("Stabilize##s" .. r.key) then stabilizeImplant(r) end
+          ImGui.SameLine()
+        end
+        if ImGui.Button("Re-roll quirk##r" .. r.key) then rerollImplant(r) end
+      end
+      ImGui.Spacing()
     end
-    if not any then
+    if #list == 0 then
       ImGui.Text(LC.saveId and "No implants detected yet." or "Load a save to see your chrome.")
     end
     if LC.malfunction then
       ImGui.Separator()
-      ImGui.TextColored(1, 0.3, 0.3, 1, "MALFUNCTION: " .. (LC.malfunction.name or "?"))
+      ImGui.TextColored(1, 0.3, 0.3, 1, "MALFUNCTION: " .. (LC.malfunction.name or "?") ..
+        " - " .. (LC.malfunction.label or ""))
     end
+    ImGui.Separator()
+    drawSettings()
   end
   ImGui.End()
 end)
